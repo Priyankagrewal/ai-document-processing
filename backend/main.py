@@ -2,18 +2,26 @@ from fastapi import FastAPI, UploadFile, Depends
 from sqlalchemy.orm import Session
 import shutil
 import os
-import webbrowser
-import redis
-import csv
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import models, database, crud
-from celery_worker import process_document
+
+# ✅ Celery safe import
+try:
+    from celery_worker import process_document
+    CELERY_AVAILABLE = True
+except:
+    CELERY_AVAILABLE = False
+
+# ✅ Redis safe import
+try:
+    import redis
+    r = redis.Redis(host='localhost', port=6379, db=0)
+except:
+    r = None
 
 app = FastAPI()
 
-# ✅ CORS (IMPORTANT FOR FRONTEND CONNECTION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,13 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-def open_browser():
-    webbrowser.open("http://127.0.0.1:8000/docs")
-
 models.Base.metadata.create_all(bind=database.engine)
-
-r = redis.Redis(host='localhost', port=6379, db=0)
 
 def get_db():
     db = database.SessionLocal()
@@ -52,9 +54,13 @@ async def upload(file: UploadFile, db: Session = Depends(get_db)):
 
     doc = crud.create_document(db, file.filename)
 
-    r.set("latest_progress", "queued")
-
-    process_document.delay(file_path, doc.id)
+    if CELERY_AVAILABLE:
+        try:
+            process_document.delay(file_path, doc.id)
+        except:
+            print("Celery failed")
+    else:
+        print("Fallback mode")
 
     return {"message": "File uploaded", "doc_id": doc.id}
 
@@ -79,45 +85,23 @@ def retry_document(doc_id: int, db: Session = Depends(get_db)):
     doc.status = "queued"
     db.commit()
 
-    process_document.delay(file_path, doc.id)
+    if CELERY_AVAILABLE:
+        try:
+            process_document.delay(file_path, doc.id)
+        except:
+            print("Retry failed")
 
     return {"message": "Retry started"}
 
 @app.put("/documents/{doc_id}")
 def update_document(doc_id: int, result: str, db: Session = Depends(get_db)):
-    doc = crud.update_document(db, doc_id, result)
+    crud.update_document(db, doc_id, result)
     return {"message": "Updated"}
 
 @app.get("/progress")
 def get_progress():
-    progress = r.get("latest_progress")
-    if progress:
-        return {"progress": progress.decode()}
-    return {"progress": "waiting"}
-
-@app.get("/export/json")
-def export_json(db: Session = Depends(get_db)):
-    docs = crud.get_documents(db)
-    return [
-        {
-            "id": d.id,
-            "filename": d.filename,
-            "status": d.status,
-            "result": d.result
-        }
-        for d in docs
-    ]
-
-@app.get("/export/csv")
-def export_csv(db: Session = Depends(get_db)):
-    docs = crud.get_documents(db)
-    file_path = "export.csv"
-
-    with open(file_path, "w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        writer.writerow(["id", "filename", "status", "result"])
-
-        for d in docs:
-            writer.writerow([d.id, d.filename, d.status, d.result])
-
-    return FileResponse(file_path, media_type='text/csv', filename="documents.csv")
+    if r:
+        progress = r.get("latest_progress")
+        if progress:
+            return {"progress": progress.decode()}
+    return {"progress": "fallback_mode"}

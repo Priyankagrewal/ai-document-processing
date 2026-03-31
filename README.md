@@ -127,10 +127,6 @@ No file preview functionality
 
 Not optimized for large-scale usage
 
-🎥 Demo Video (MUST)
-👉 Add your demo video link here:
-https://your-demo-video-link
-
 📁 Sample Files
 Folder:
 sample_files/

@@ -52,7 +52,7 @@ def process_document(self, file_path, doc_id):
             doc.status = "failed"
             db.commit()
 
-        r.set("latest_progress", "job_failed")
+        r.set("latest_progress", "job_failed") 
         return {"status": "failed"}
 
     finally:
